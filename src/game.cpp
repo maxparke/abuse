@@ -3364,8 +3364,14 @@ int main(int argc, char *argv[])
         if (!g->done() && main_net_cfg)
             wait_min_players();
 
+        // True while base->packet holds input built by net_send() that no
+        // net_receive() has consumed yet (see the fixed update below).
+        bool input_pending = false;
         if (!g->done())
+        {
             net_send(1);
+            input_pending = true;
+        }
         if (!g->done() && net_start())
         {
             g->Step(); // process all the objects in the world
@@ -3438,7 +3444,25 @@ int main(int argc, char *argv[])
                         }
                     }
 
+                    // Network games are lockstep: the input sampled now is sent
+                    // to the peers and simulated on the next tick.  A local game
+                    // has no peers to wait for, so sample input and simulate it
+                    // on this tick, removing one full tick of input latency.
+                    const bool same_tick_input = !net_game_active();
+
+                    // A packet can already be pending (built by the startup
+                    // net_send(1) or by the last tick of a network game).
+                    // Consume it instead of appending a second input set to it.
+                    // Coming from a local game nothing is pending, so a network
+                    // tick must send before it can wait for the peers' input.
+                    if (!input_pending)
+                    {
+                        net_send();
+                        input_pending = true;
+                    }
+
                     net_receive();
+                    input_pending = false;
                     if (req_end)
                         continue;
 
@@ -3454,7 +3478,11 @@ int main(int argc, char *argv[])
                         g->draw(g->state == SCENE_STATE);
                     }
 
-                    net_send();
+                    if (!same_tick_input)
+                    {
+                        net_send();
+                        input_pending = true;
+                    }
                 }
                 else
                 {
